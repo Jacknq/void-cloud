@@ -4,7 +4,7 @@
 
 Clean image, Based on void-live-aarch64-20250202-base glibc
 
-Aim is to provide mathematically and architecturally unique minimal distribution. Mutable OS with Atomic State Rollbacks via Decoupled Layers. ***Custom hybrid*** that gives you the performance benefits of a modern rolling-release distribution alongside the exact-state reliability of an immutable operating system
+Aim is to provide mathematically and architecturally unique minimal distribution. ***Custom hybrid*** that gives you the performance benefits of a modern rolling-release distribution alongside the exact-state reliability of an immutable operating system
 Btrfs-style storage economics. Furthermore, taking advantage of Void's native runit stage 3 architecture, bypassed the exact structural flaws that systemd users run into.  /*David vs. Goliah, It proves that with the right orchestration, less is infinitely more.* /
 
 btrfs structure,  ***qcow2***  support, LTS kernel
