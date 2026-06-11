@@ -1,4 +1,5 @@
 # void cloud os
+Ultra-Lightweight, Cyber-Resilient Operating System for Edge and Critical Infrastructure.
 ### community cloud image - with thee Right taste and Flavor
 [Void](https://voidlinux.org/) featured variant efi image compatible with datacenters VMs, PCs
 
