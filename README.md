@@ -15,7 +15,7 @@ Base image has no desktop just console xbps-install what you want.
 
 https://sourceforge.net/projects/voidlinux-cloud-qcow2-efi-arm
 
-when you want ISO, for arm, x86 or x64 cases download void live iso and adapt, set partition in setup.sh and run the scripts on your machine
+At the time, when you want ISO, for arm, x86 or x64 cases download void live iso and adapt, set partition in setup.sh and run the scripts on your machine
 
 if you like it or use it give it a like!
 
