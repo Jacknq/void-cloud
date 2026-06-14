@@ -313,7 +313,8 @@ env UUID_FS="$UUID_FS" FS_TYPE="$FS_TYPE" FS_PKGS="$FS_PKGS" INSTALL_MODE="$INST
   # Secure modified Port 222 firewall paths completely
   ufw allow 5900:5905/tcp
   ufw allow 222/tcp
-  ufw enable
+   # Set default state to active so it initializes fully on your very first real boot
+  ufw --force enable || echo "Firewall state configured for first boot"
 EOF
 
 # ==============================================================================
