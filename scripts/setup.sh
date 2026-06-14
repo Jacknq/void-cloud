@@ -104,7 +104,7 @@ esac
 # --- System Preparation ---
 sudo xbps-install -Syu
 sudo xbps-install -uy xbps
-sudo xbps-install parted -y
+sudo xbps-install parted curl -y
 
 # --- Mode-Specific Partition Management ---
 if [ "$INSTALL_MODE" = "wipe" ]; then
