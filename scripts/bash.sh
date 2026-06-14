@@ -201,7 +201,113 @@ export VISUAL="/usr/bin/nano"
 
 EOF
 sudo chmod 644 /etc/profile.d/void.cloud.sh
+sudo cat << 'EOF' > /etc/profile.d/void.cloud.functions.sh
+# Global Void Linux service manager function
+service() {
+    # Keep locale settings local to the function execution
+    local LC_ALL=C
+    local LANG=C
 
+    local cmd="$1"
+    local service="/etc/sv"
+    local serv_where="/var/service"
+
+    if [ -z "$cmd" ]; then
+        echo "Error: Please provide a command or use --help for more info"
+        return 1
+    fi
+
+    if [[ "$cmd" != "list" && "$cmd" != "--h" && "$cmd" != "--help" && -z "$2" ]]; then
+        echo "Error: Please provide the service name"
+        return 1
+    fi
+
+    check_installed() {
+        if [ ! -d "$service/$2" ]; then
+            echo "Error: Service $2 isn't installed on your computer"
+            return 1
+        fi
+    }
+
+    _help() {
+        echo "service - Void Linux service manager
+
+Commands
+    link [SERVICE]      - Link a service to active services
+    unlink [SERVICE]    - Unlink a service from active services
+    relink [SERVICE]    - Relink a service, if previous one is broken
+    lnstat [SERVICE]    - Check symlink health
+    start [SERVICE]     - Start a service
+    restart [SERVICE]   - Restart a service
+    stop [SERVICE]      - Stop a service
+    status [SERVICE]    - Check service status through sv
+    list                - List all currently linked services"
+    }
+
+    case "$cmd" in
+        link)
+            check_installed "$@" || return 1
+            echo "Linking $2 to active services..."
+            sudo ln -s "$service/$2" "$serv_where/$2"
+            ;;
+        
+        unlink)
+            check_installed "$@" || return 1
+            echo "Unlinking $2..."
+            sudo rm -rf "$serv_where/$2"
+            ;;
+        
+        relink)
+            check_installed "$@" || return 1
+            echo "Force-relinking $2..."
+            sudo ln -sf "$service/$2" "$serv_where/$2"
+            ;;
+        
+        lnstat)
+            check_installed "$@" || return 1
+            if [ -L "$serv_where/$2" ]; then
+                if [ -e "$serv_where/$2" ]; then
+                    echo "$2 is working fine"
+                else
+                    echo "$2 symbolic link is broken"
+                fi
+            else
+                echo "$2 is not linked in $serv_where"
+            fi
+            ;;
+
+        start)
+            check_installed "$@" || return 1
+            sudo sv start "$2"
+            ;;
+        
+        restart)
+            check_installed "$@" || return 1
+            sudo sv restart "$2"
+            ;;
+        
+        stop)
+            check_installed "$@" || return 1
+            sudo sv stop "$2"
+            ;;
+
+        status)
+            check_installed "$@" || return 1
+            sv status "$2"
+            ;;
+
+        list)
+            echo "--- Currently Enabled Services ---"
+            ls -1 /etc/runit/runsvdir/current
+            ;;
+        
+        --help|--h) _help ;;
+        *) _help ;;
+    esac
+}
+
+EOF
+sudo chmod 644 /etc/profile.d/void.cloud.functions.sh
 
 # 5. Enable syntax highlighting for the Nano text editor globally
 echo "-> Enabling Nano syntax highlighting..."
