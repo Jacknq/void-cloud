@@ -124,9 +124,7 @@ ln -sf /etc/sv/agetty-ttyAMA0 /var/service/
   ln -sf /etc/sv/nanoklogd /var/service/
     ln -sf /etc/sv/sshd /var/service/
      ln -sf /etc/sv/ufw /var/service/
-  ufw allow 5900:5905/tcp
-  ufw allow 22
-
+ 
   # Schedule automatic routine system packages upgrades via crontab
   (crontab -l 2>/dev/null; echo '#update every 1st  every month') | crontab -
   (crontab -l 2>/dev/null; echo '0 2 1 * * xbps-install -Syu --yes && shutdown -r +1'; echo '@reboot vkpurge rm all') | crontab -
@@ -153,6 +151,10 @@ ln -sf /etc/sv/agetty-ttyAMA0 /var/service/
   rm -rf /var/cache/xbps/*
   fstrim -av / || echo "Fstrim skipped during installation context"
   btrfs balance start -dusage=50 -musage=50 / || true
+
+  ufw allow 5900:5905/tcp
+  ufw allow 22
+  ufw enable
 EOF
 
 echo "=== 12. Cleaning locks and sync mappings ==="
