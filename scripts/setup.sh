@@ -1,7 +1,7 @@
 #!/bin/sh
 : '
 Original Full Disk Wipe Mode (Destructive):
-bash./setup.sh --btrfs
+./setup.sh --btrfs
 # OR
 ./setup.sh --xfs
 Dual Boot / Safe Coexistence Mode (Preserves existing OS and EFI partition):
