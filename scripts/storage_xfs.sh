@@ -11,6 +11,7 @@ partition_and_format_wipe() {
 
     echo "=== 5. Formatting filesystems ==="
     mkfs.vfat -F 32 "$PART1"
+    # all features enabled by default
     mkfs.xfs -f "$PART2"
     
     setup_mounts
