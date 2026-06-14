@@ -21,28 +21,33 @@ Standard Host Native Installation (Default) autodetects build machine:
 ./setup.sh --xfs
 
 '
-
 set -e
 
-# --- Pre-Flight Internet Connectivity Check ---
+# ==============================================================================
+# PHASE 0: PRE-FLIGHT SYSTEM VERIFICATIONS
+# ==============================================================================
 echo "=== Pre-flight Check: Verifying active internet connectivity ==="
 if ! curl -s --connect-timeout 5 https://voidlinux.org > /dev/null; then
     echo "ERROR: Active internet link could not be verified!" >&2
+    echo "Please ensure you have an active network link before running this installer." >&2
     exit 1
 fi
+echo "Internet connectivity verified successfully."
 
-# --- Configuration & Input Handling ---
+# ==============================================================================
+# PHASE 1: CONFIGURATION & INPUT ARGUMENT HANDLING
+# ==============================================================================
 FS_TYPE=""
 INSTALL_MODE="wipe" 
 TARGET_EFI=""
 TARGET_ROOT=""
-FORCE_ARCH="" # Captures cross-architecture target overrides
+FORCE_ARCH="" 
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --btrfs) FS_TYPE="btrfs"; shift ;;
         --xfs)   FS_TYPE="xfs"; shift ;;
-        --arch)  FORCE_ARCH="$2"; shift 2 ;; # Allow passing '--arch x86_64' explicitly
+        --arch)  FORCE_ARCH="$2"; shift 2 ;; 
         --parts) 
             INSTALL_MODE="manual"
             TARGET_EFI="$2"
@@ -58,27 +63,40 @@ if [ -z "$FS_TYPE" ]; then
     exit 1
 fi
 
-# Determine Target vs Host Architecture
+if [ "$INSTALL_MODE" = "manual" ] && { [ -z "$TARGET_EFI" ] || [ -z "$TARGET_ROOT" ]; }; then
+    echo "ERROR: --parts requires exactly two arguments: <efi_partition> <root_partition>" >&2
+    echo "Example: ./setup.sh --btrfs --parts /dev/sda1 /dev/sda4" >&2
+    exit 1
+fi
+
+MODULE_FILE="./storage_${FS_TYPE}.sh"
+if [ ! -f "$MODULE_FILE" ]; then
+    echo "ERROR: Storage definitions module script not found: $MODULE_FILE" >&2
+    exit 1
+fi
+
+chmod +x "$MODULE_FILE"
+
+# ==============================================================================
+# PHASE 2: HARDWARE ARCHITECTURE MATRIX CONFIGURATION
+# ==============================================================================
 HOST_ARCH=$(uname -m)
 if [ -n "$FORCE_ARCH" ]; then
     TARGET_ARCH="$FORCE_ARCH"
 else
     TARGET_ARCH="$HOST_ARCH"
 fi
-# Standardize naming syntax maps
 [ "$TARGET_ARCH" = "arm64" ] && TARGET_ARCH="aarch64"
 
 echo "Host System Architecture: $HOST_ARCH"
 echo "Target Image Architecture: $TARGET_ARCH"
 
-# Host Prerequisites: If cross-building, the host MUST have emulation packages ready
+# Host Cross-Building Prerequisite Hook
 if [ "$HOST_ARCH" != "$TARGET_ARCH" ]; then
     echo "=== Cross-Architecture Build Detected! Installing Host Emulation Layer ==="
-    # Installs the static QEMU user space engines and kernel binary interpreters on host
     sudo xbps-install -Sy qemu-user-static-binfmt binfmt-support -y || true
 fi
 
-# --- Configure Target Architecture Profile Properties ---
 case "$TARGET_ARCH" in
     x86_64)
         export GRUB_PKG="grub-x86_64-efi"
@@ -87,7 +105,7 @@ case "$TARGET_ARCH" in
         export EFI_FALLBACK_BIN="BOOTX64.EFI"
         export GRUB_SRC_BIN="grubx64.efi"
         export QEMU_ARCH="x86_64"
-        export XBPS_TARGET_ARCH="x86_64" # Crucial environment value for cross-xbps
+        export XBPS_TARGET_ARCH="x86_64" 
         ;;
     aarch64)
         export GRUB_PKG="grub-arm64-efi"
@@ -104,12 +122,16 @@ case "$TARGET_ARCH" in
         ;;
 esac
 
-# --- System Preparation ---
+# ==============================================================================
+# PHASE 3: LIVE HOST APPLICATION DEPENDENCY BOOTSTRAPPING
+# ==============================================================================
 sudo xbps-install -Syu
 sudo xbps-install -uy xbps
 sudo xbps-install parted curl -y
 
-# --- Mode-Specific Partition Management ---
+# ==============================================================================
+# PHASE 4: TARGET DRIVE PARTITION & FILE SYSTEM INITIALIZATION
+# ==============================================================================
 if [ "$INSTALL_MODE" = "wipe" ]; then
     echo "=== 1. Dynamically locating installation target drive ==="
     TARGET_DISK=$(lsblk -dnro NAME,TYPE,MOUNTPOINTS | awk '$2=="disk" && $3=="" {print $1; exit}')
@@ -120,37 +142,49 @@ if [ "$INSTALL_MODE" = "wipe" ]; then
     export DISK="/dev/$TARGET_DISK"
     export PART1="${DISK}1"
     export PART2="${DISK}2"
+    echo "Target drive identified for full wipe: $DISK"
+
     echo "=== 2. Wiping target disk headers ==="
     wipefs -a "$DISK"
+
     echo "=== 3. Creating GPT Table ==="
     parted -s "$DISK" mklabel gpt
+
+    # Dynamically inject and execute partition/format routines from backend module
+    . "$MODULE_FILE"
     partition_and_format_wipe
 else
     echo "=== 1. Manual Coexistence Mode Activated ==="
+    if [ ! -b "$TARGET_EFI" ] || [ ! -b "$TARGET_ROOT" ]; then
+        echo "ERROR: Specified partitions do not exist or are not valid block devices!" >&2
+        exit 1
+    fi
     export PART1="$TARGET_EFI"
     export PART2="$TARGET_ROOT"
+    echo "Using existing EFI partition: $PART1"
+    echo "Targeting root partition for clean installation: $PART2"
+    echo "WARNING: Existing data on $PART2 will be wiped. $PART1 will be preserved safely."
+
+    # Dynamically inject and execute safe partition routines from backend module
+    . "$MODULE_FILE"
     format_and_mount_manual
 fi
 
+# ==============================================================================
+# PHASE 5: ENVIRONMENT MIRRORING & VIRTUAL JUMP PREPARATION
+# ==============================================================================
 echo "=== 8. Cloning Live OS structures directly to Target ==="
-# Note: If cloning a running system to an alternative architecture image, we do NOT 
-# want to inherit the host architectures binaries, or it causes severe library chaos.
 cp -ax / /mnt
 
-# --- CROSS ARCHITECTURE EMULATION JUMP HOOK ---
+# Inject QEMU static interpreter configurations if crossing CPU instruction architectures
 if [ "$HOST_ARCH" != "$TARGET_ARCH" ]; then
     echo "=== Injecting QEMU User Static Binary into Target Space ==="
     sudo mkdir -p /mnt/usr/bin
     sudo cp -f "/usr/bin/qemu-${QEMU_ARCH}-static" /mnt/usr/bin/
-    
-    # Ensure binary format execution rules are fully registered on the host machine
     if [ -f /etc/init.d/binfmt-support ]; then sudo /etc/init.d/binfmt-support restart; fi
-    
-    # Force initialize a clean native target package database to prevent host arch bleed
     echo "ARCH=$XBPS_TARGET_ARCH" > /mnt/etc/xbps.d/00-arch.conf
 fi
 
-# --- Executing Dynamic FSTAB Setup ---
 generate_fstab
 
 echo "=== 10. Mounting runtime components for chroot wrapper ==="
@@ -159,17 +193,19 @@ mount --rbind /dev /mnt/dev && mount --make-rslave /mnt/dev
 mount --rbind /proc /mnt/proc && mount --make-rslave /mnt/proc
 mount --bind /run /mnt/run && mount --make-slave /mnt/run
 
+# ==============================================================================
+# PHASE 6: ISOLATED CHROOT EXECUTION & ARCHITECTURE COMPILATION PIPELINE
+# ==============================================================================
 echo "=== 11. Generating permanent self-sustained UEFI boot tracks ==="
 UUID_FS=$(blkid -o value -s UUID "$PART2")
 
-# We pass down XBPS_ARCH directly to force the chroot xbps system to operate inside target architecture mode
 env UUID_FS="$UUID_FS" FS_TYPE="$FS_TYPE" FS_PKGS="$FS_PKGS" INSTALL_MODE="$INSTALL_MODE" \
     TARGET_ARCH="$TARGET_ARCH" GRUB_PKG="$GRUB_PKG" GRUB_TARGET="$GRUB_TARGET" \
     EFI_FALLBACK_DIR="$EFI_FALLBACK_DIR" EFI_FALLBACK_BIN="$EFI_FALLBACK_BIN" \
     GRUB_SRC_BIN="$GRUB_SRC_BIN" XBPS_ARCH="$XBPS_TARGET_ARCH" chroot /mnt /bin/bash << 'EOF'
   set -e
   
-  # Synchronize packages forcing target repository profiles
+  # Synchronize packages forcing target database profiles
   xbps-install -Syu || true
   xbps-install -u xbps --yes
   
@@ -181,6 +217,7 @@ env UUID_FS="$UUID_FS" FS_TYPE="$FS_TYPE" FS_PKGS="$FS_PKGS" INSTALL_MODE="$INST
   echo "Port 222" > /etc/ssh/sshd_config.d/ssh.conf
   ln -sf /etc/sv/cronie /var/service/
 
+  # Configure display targets matching platform environments
   if [ "$TARGET_ARCH" = "x86_64" ]; then
       ln -sf /etc/sv/agetty-tty1 /var/service/
   else
@@ -192,9 +229,11 @@ env UUID_FS="$UUID_FS" FS_TYPE="$FS_TYPE" FS_PKGS="$FS_PKGS" INSTALL_MODE="$INST
       ln -sf /etc/sv/agetty-ttyAMA0 /var/service/
   fi
 
+  # Prevent runtime update kernel package drifts
   echo 'ignorepkg=linux' >> /etc/xbps.d/10-ignore.conf
   echo 'ignorepkg=linux-headers' >> /etc/xbps.d/10-ignore.conf
 
+  # Strip down pre-existing live image kernels cleanly
   xbps-remove -R linux linux-headers --yes || true
   vkpurge rm all
   
@@ -218,41 +257,45 @@ env UUID_FS="$UUID_FS" FS_TYPE="$FS_TYPE" FS_PKGS="$FS_PKGS" INSTALL_MODE="$INST
       echo 'GRUB_DISABLE_OS_PROBER=true' >> /etc/default/grub
   fi
 
-  # Forces grub-install to output structural architecture profiles mapping target requirements
+  # Execute isolated bootloader tracking generation
   grub-install --target=$GRUB_TARGET --efi-directory=/boot/efi --bootloader-id=grub --recheck --no-nvram
   grub-mkconfig -o /boot/grub/grub.cfg
   
-  # Skip real efibootmgr hardware mapping calls if running in a simulated target space
+  # Skip real efibootmgr NVRAM calls if inside an emulation context
   if [ "$(uname -m)" = "$TARGET_ARCH" ]; then
       efibootmgr -v || echo 'EFI boot entry mapped'
   else
       echo "Cross-compiling environment: NVRAM variable synchronization skipped."
   fi
 
+  # Core runtime daemons initialized via runit frameworks (AppArmor explicitly active)
+  ln -sf /etc/sv/apparmor /var/service/
   ln -sf /etc/sv/socklog-unix /var/service/
   ln -sf /etc/sv/nanoklogd /var/service/
   ln -sf /etc/sv/sshd /var/service/
   ln -sf /etc/sv/ufw /var/service/
  
+  # Schedule cron automated routine maintenance tasks
   (crontab -l 2>/dev/null; echo '#update every 1st every month') | crontab -
   (crontab -l 2>/dev/null; echo '0 2 1 * * xbps-install -Syu --yes && shutdown -r +1'; echo '@reboot vkpurge rm all') | crontab -
   (crontab -l 2>/dev/null; echo '#docleanup every hour') | crontab -
   (crontab -l 2>/dev/null; echo '0 * * * * find /var/cache/xbps -type f -mmin +60 -exec rm -f {} +') | crontab -
   (crontab -l 2>/dev/null; echo '05 * * * * /usr/sbin/fstrim -a') | crontab -
 
+  # Strip default network constraints and switch to universal manager
   rm -f /var/service/dhcpcd-eth0
   ln -sf /etc/sv/dhcpcd /var/service/
   
+  # Clone architecture assets over to standard global default/fallback paths
   mkdir -p /boot/efi/EFI/$EFI_FALLBACK_DIR
   cp /boot/efi/EFI/grub/$GRUB_SRC_BIN /boot/efi/EFI/$EFI_FALLBACK_DIR/$EFI_FALLBACK_BIN
 
-  # CRITICAL X86 CROSS-COMPILATION DRACUT INJECTION TWEAK:
-  # Dracut running inside QEMU emulation fails auto-detecting core storage modules. 
-  # We force find the newly installed LTS kernel directory name inside /lib/modules dynamically.
+  # Direct architecture system-agnostic kernel image layout tracking building via dracut
   TARGET_KERNEL_VERSION=$(ls -1 /lib/modules | head -n 1)
   echo "Building Initramfs Storage Track Drivers for Kernel version: $TARGET_KERNEL_VERSION"
   dracut --force --kver "$TARGET_KERNEL_VERSION" --regenerate-all
   
+  # Structural workspace storage footprint cleanups
   xbps-remove -O --yes
   xbps-remove -o --yes
   rm -rf /var/cache/xbps/*
@@ -261,17 +304,21 @@ env UUID_FS="$UUID_FS" FS_TYPE="$FS_TYPE" FS_PKGS="$FS_PKGS" INSTALL_MODE="$INST
       fstrim -av / || echo "Fstrim skipped"
   fi
 
+  # Call target system configuration optimizations if exported by file system module
   if [ -f /tmp/fs_optimize.sh ]; then
       sh /tmp/fs_optimize.sh
       rm -f /tmp/fs_optimize.sh
   fi
 
+  # Secure modified Port 222 firewall paths completely
   ufw allow 5900:5905/tcp
   ufw allow 222/tcp
   ufw enable
 EOF
 
-# --- Post-Chroot Cleanup of Emulation Hooks ---
+# ==============================================================================
+# PHASE 7: ENVIRONMENT DISMANTLING & SYSTEM WRAPPER TERMINATION
+# ==============================================================================
 if [ "$HOST_ARCH" != "$TARGET_ARCH" ]; then
     rm -f "/mnt/usr/bin/qemu-${QEMU_ARCH}-static"
 fi
@@ -279,9 +326,8 @@ fi
 echo "=== 12. Cleaning locks and sync mappings ==="
 umount -R /mnt
 sync
-echo "SUCCESS! Target Cross-Architecture Image Build Complete."
+echo "SUCCESS! Target Installation Build Process Complete."
 
-# Never force-poweroff a host if preparing a target image loop disk 
 if [ "$HOST_ARCH" != "$TARGET_ARCH" ] || [ "$INSTALL_MODE" = "manual" ]; then
     echo "Image preparation wrapper completed successfully. Exiting clean."
 else
