@@ -123,6 +123,9 @@ ln -sf /etc/sv/agetty-ttyAMA0 /var/service/
   ln -sf /etc/sv/socklog-unix /var/service/
   ln -sf /etc/sv/nanoklogd /var/service/
     ln -sf /etc/sv/sshd /var/service/
+     ln -sf /etc/sv/ufw /var/service/
+  ufw allow 5900:5905/tcp
+  ufw allow 22
 
   # Schedule automatic routine system packages upgrades via crontab
   (crontab -l 2>/dev/null; echo '#update every 1st  every month') | crontab -
