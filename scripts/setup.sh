@@ -1,4 +1,16 @@
 #!/bin/sh
+: '
+Original Full Disk Wipe Mode (Destructive):
+bash./setup.sh --btrfs
+# OR
+./setup.sh --xfs
+Dual Boot / Safe Coexistence Mode (Preserves existing OS and EFI partition):
+bash# Syntax: ./setup.sh --<filesystem> --parts <efi_partition> <target_clean_partition>
+./setup.sh --btrfs --parts /dev/nvme0n1p1 /dev/nvme0n1p4
+# OR
+./setup.sh --xfs --parts /dev/sda1 /dev/sda3
+'
+
 set -e
 
 # --- Configuration & Input Handling ---
