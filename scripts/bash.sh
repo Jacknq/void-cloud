@@ -3,7 +3,7 @@
 set -e
 
 echo "=== Starting Root Shell Configuration ==="
-
+xbps-install -u xbps
 # 1. Change root's default login shell from dash to bash
 echo "-> Changing default shell to /bin/bash..."
 sudo chsh -s /bin/bash root
