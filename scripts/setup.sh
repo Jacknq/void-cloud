@@ -22,6 +22,7 @@ Standard Host Native Installation (Default) autodetects build machine:
 
 '
 #set -e
+
 export XBPS_ARCH="$XBPS_TARGET_ARCH"
 export REPO_URL="https://repo-default.voidlinux.org/current"
 #export XBPS_REPOSITORY="https://repo-default.voidlinux.org/current"
@@ -84,12 +85,14 @@ case "$TARGET_ARCH" in
         export GRUB_PKG="grub-x86_64-efi"; export GRUB_TARGET="x86_64-efi"
         export EFI_FALLBACK_DIR="BOOT"; export EFI_FALLBACK_BIN="BOOTX64.EFI"
         export GRUB_SRC_BIN="grubx64.efi"; export XBPS_TARGET_ARCH="x86_64"
+         export GRUB_PLATFORMS="efi-x86_64" export  GRUB_EFI_ARCH="x86_64"
         # export REPO_URL="https://voidlinux.org"
         ;;
     aarch64)
         export GRUB_PKG="grub-arm64-efi"; export GRUB_TARGET="arm64-efi"
         export EFI_FALLBACK_DIR="BOOT"; export EFI_FALLBACK_BIN="BOOTAA64.EFI"
         export GRUB_SRC_BIN="grubaa64.efi"; export XBPS_TARGET_ARCH="aarch64"
+         export GRUB_PLATFORMS="efi-arm64" ; export  GRUB_EFI_ARCH="arm64"
          export REPO_URL="${REPO_URL}/aarch64"
                 ;;
     *)
@@ -107,7 +110,7 @@ esac
 if [ -z "$FS_PKGS" ]; then
     case "$FS_TYPE" in
         btrfs) export FS_PKGS="btrfs-progs" ;;
-        xfs)   export FS_PKGS="xfsprogs" ;;
+        xfs)   export FS_PKGS="xfsprogs dracut efibootmgr wget" ;;
     esac
 fi
 
@@ -187,12 +190,11 @@ fi
 
 rm -rf /mnt/var/cache/xbps/*
 xbps-install -S -R "$REPO_URL" -r /mnt
-xbps-install -vSy -R "$REPO_URL" -r /mnt base-system base-files bash linux-firmware grub || {
+xbps-install -vSy -R "$REPO_URL" -r /mnt base-system linux-firmware || {
     echo "ERROR: Failed to install bash in target system" >&2
     exit 1
 }
-#xbps-install -vSy -R "$REPO_URL" -r /mnt base-files
-
+set -e
 echo 'after'
 #xbps-install -C /etc/xbps.d -S -y -r /mnt base-files || true
 # Check if the essential files were actually written to your disk
@@ -216,20 +218,26 @@ cp /etc/resolv.conf /mnt/etc/resolv.conf
 mkdir -p /mnt/etc/ssl/certs          # <- create the path
 mkdir -p /mnt/etc/ca-certificates
 cp -a /etc/ssl /mnt/etc
+#cp -a /etc/runit /mnt/etc
+cp -a /etc/rc.* /mnt/etc
+#cp -a /etc/sv /mnt/etc
 
 mkdir -p /mnt/etc/dracut.conf.d
 
-cat > /mnt/etc/dracut.conf <<EOF
-hostonly="no"
-compress="xz"
-EOF
-
 sudo mkdir -p /mnt/etc/dracut.conf.d
-sudo tee /mnt/etc/dracut.conf.d/10-xfs.conf <<EOF
-hostonly="yes"
-add_drivers+=" ${FS_TYPE} "
-omit_dracutmodules+=" systemd systemd-initrd systemd-networkd "
+sudo tee /mnt/etc/dracut.conf.d/0xfs.conf <<EOF
+hostonly="no"
+ipv6.disable=1
+loglevel=7
+# Force include the foundational filesystem framework modules
+#add_dracutmodules+=" gaps basesystem "
+# Inject your structural storage engine directly into the kernel map
+filesystems+=" ${FS_TYPE} "
+add_drivers+=" libcrc32c ${FS_TYPE} "
+add_dracutmodules+=" base rootfs-block "
 EOF
+mkdir -p /mnt/etc/runit/runsvdir/default
+
 # ==============================================================================
 # PHASE 6: CHROOT ENTRY (Package installation happens here)
 # ==============================================================================
@@ -241,184 +249,220 @@ env UUID_FS="$UUID_FS" FS_TYPE="$FS_TYPE" FS_PKGS="$FS_PKGS" INSTALL_MODE="$INST
 source /etc/profile
 ldconfig
 echo "installing xbps and packages"
+mount -o rw,remount /boot/efi
 
-#critical for xbps to work
+mkdir -p /var/run/runit
 echo "Checking for /var/db/xbps/keys:"
 ls -la /var/db/xbps/keys/ || echo "Keys directory is EMPTY!"
-# Test DNS
-mkdir -p /var/spool/cron
-chmod 1777 /var/spool/cron
-mkdir -p /var/tmp
-chmod 1777 /var/tmp
-#mkdir -p /dev /dev/pts /proc /sys
-#mount -t proc proc /proc
-#mount -t sysfs sysfs /sys
-#mount -t devtmpfs dev /dev
-#mount -t devpts devpts /dev/pts -o gid=5,mode=620
 
-# Create EFI directory structure
-mkdir -p /boot/efi/EFI/BOOT /boot/efi/EFI/grub
-chmod 755 /boot/efi /boot/efi/EFI /boot/efi/EFI/BOOT
+mkdir -p /var/run/dbus /var/log/dbus
+chmod 755 /var/run/dbus
+mkdir -p /var/spool/cron /var/tmp
+chmod 1777 /var/spool/cron /var/tmp
+mkdir -p /var/{run,log,service,spool/cron/crontabs,tmp}
+touch /var/run/utmp /var/log/wtmp
+chmod 666 /var/run/utmp /var/log/wtmp
 
-#chmod 755 /boot/efi /boot/efi/Default 2>/dev/null || true
+mkdir -p /boot/efi/EFI/BOOT /boot/efi/EFI/grub /boot/efi/Default
+chmod 755 /boot/efi /boot/efi/EFI /boot/efi/EFI/BOOT /boot/efi/Default
 
-mount -o rw,remount /boot/efi          # make sure EFI is writable
-mkdir -p /boot/efi/Default
-chmod 755 /boot/efi/Default
+mkdir -p /etc/runit /etc/sv
 
 xbps-install -Syu || true
 xbps-install -u xbps --yes
 
-xbps-install -Sy --yes  \
-base-files "$GRUB_PKG" "$FS_PKGS" \
-linux-lts linux-lts-headers mesa-dri linux-firmware \
-dhcpcd cronie nano xtools wget \
-p7zip git curl tar parted vsv \
-openssh socklog-void apparmor ufw fastfetch dracut
+xbps-install -Sy --yes base-system efibootmgr "$GRUB_PKG" "$FS_PKGS" \
+    linux6.12 dbus elogind mesa-dri \
+    NetworkManager cronie nano xtools wget chrony grep sed \
+    util-linux net-tools sudo zip git curl tar gzip parted vsv socklog-void \
+    lvm2 xmirror openssh apparmor ufw fastfetch dracut-uefi zstd
+#fix runit
+# rm -rf var/service run/runit
+# mkdir -p run/runit/runsvdir
+# mkdir -p var/service
+mkdir -p /etc/runit/runsvdir/default
+chmod 755 /etc/runit/runsvdir/default/
+rm /etc/runit/runsvdir/current
+ln -sf /etc/runit/runsvdir/default /etc/runit/runsvdir/current
 
-# Configure GRUB using echo instead of sed
-echo "Configuring GRUB..."
+# ==============================================================================
+# GRUB2 EFI CONFIGURATION
+# ==============================================================================
+echo "Configuring GRUB2 EFI..."
+
+if [ "$FS_TYPE" = "btrfs" ]; then
+    ROOTFLAGS="subvol=@"
+    GRUB_PRELOAD="btrfs"
+else
+    ROOTFLAGS=""
+    GRUB_PRELOAD="xfs"
+fi
+FINALROOTFLAG="${ROOTFLAGS:+rootflags=$ROOTFLAGS}"
+
 cat > /etc/default/grub <<EOG
 GRUB_DISTRIBUTOR="Void"
-GRUB_PRELOAD_MODULES="$([ "$FS_TYPE" = "btrfs" ] && echo "btrfs" || echo "xfs")"
-GRUB_CMDLINE_LINUX_DEFAULT="loglevel=4 root=UUID=${FS_TYPE:+"$([ "$FS_TYPE" = "btrfs" ] && echo "$UUID_BTRFS" || echo "$UUID_FS")"} rootflags=${FS_TYPE:+"$([ "$FS_TYPE" = "btrfs" ] && echo "subvol=@" || echo "")"} rootfstype=${FS_TYPE:-$FS_TYPE} console=tty0 console=ttyAMA0,115200"
+GRUB_PRELOAD_MODULES="$GRUB_PRELOAD"
+GRUB_CMDLINE_LINUX_DEFAULT="loglevel=4 root=UUID=$UUID_FS $FINALROOTFLAG rootfstype=$FS_TYPE console=tty0 console=ttyAMA0,115200 rw"
 GRUB_DISABLE_OS_PROBER=true
+GRUB_TIMEOUT=5
+GRUB_TIMEOUT_STYLE=menu
+GRUB_GFXMODE=auto
 EOG
 
-echo 'Installing GRUB...'
-mkdir -p /boot/efi/EFI/BOOT
-/usr/sbin/grub-install --target="$GRUB_TARGET" --efi-directory=/boot/efi --bootloader-id=VOID --recheck
-echo 'Generating GRUB config...'
-grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tee /tmp/grub-mkconfig.log
 
-echo 'grub install'
-mkdir -p /boot/efi/EFI/BOOT
-/usr/sbin/grub-install --target="$GRUB_TARGET" --efi-directory=/boot/efi --bootloader-id=VOID --recheck
-#echo 'grub mkconfig'
-#grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tee /tmp/grub-mkconfig.log
+mkdir -p /etc/sv/agetty-generic
+cat > /etc/sv/agetty-generic/run <<'EOS'
+#!/bin/sh
+exec 2>&1
+[ -r ./conf ] && . ./conf
+exec chpst -u root /sbin/agetty ${AGETTY_ARGS} ${TTY} ${BAUD} ${TERM}
+EOS
+chmod +x /etc/sv/agetty-generic/run
 
-# Core runtime services initialization
-ln -sf /etc/sv/apparmor /var/service/ 2>/dev/null || true
-ln -sf /etc/sv/cronie /var/service/ 2>/dev/null || true
-ln -sf /etc/sv/socklog-unix /var/service/ 2>/dev/null || true
-ln -sf /etc/sv/nanoklogd /var/service/ 2>/dev/null || true
-ln -sf /etc/sv/sshd /var/service/ 2>/dev/null || true
-ln -sf /etc/sv/ufw /var/service/ 2>/dev/null || true
-
+mkdir -p /etc/sv/agetty-ttyAMA0
 cp -R /etc/sv/agetty-generic /etc/sv/agetty-ttyAMA0
-echo "ttyAMA0" > /etc/sv/agetty-ttyAMA0/conf
-echo "115200" >> /etc/sv/agetty-ttyAMA0/conf
-echo "linux" >> /etc/sv/agetty-ttyAMA0/conf
-echo "--autologin root" >> /etc/sv/agetty-ttyAMA0/conf
-ln -sf /etc/sv/agetty-ttyAMA0 /var/service/
+cat > /etc/sv/agetty-ttyAMA0/conf <<'EOS'
+TTY=ttyAMA0
+BAUD=115200
+TERM=linux
+AGETTY_ARGS=--autologin root
+EOS
+#ln -sf /etc/sv/agetty-ttyAMA0 /var/service/
 
-# Scheduled maintenance tasks via cron
-# Monthly system update and reboot
-(crontab -l 2>/dev/null; echo '# Update every 1st of the month') | crontab -
-(crontab -l 2>/dev/null; echo '0 2 1 * * xbps-install -Syu --yes && shutdown -r +1') | crontab -
+for tty in 1 2 3 4 5 6; do
+    mkdir -p "/etc/sv/agetty-tty${tty}"
+    cat > "/etc/sv/agetty-tty${tty}/run" <<EOS
+#!/bin/sh
+exec /sbin/agetty --noclear tty${tty} linux
+EOS
+    chmod +x "/etc/sv/agetty-tty${tty}/run"
+   # ln -sf "/etc/sv/agetty-tty${tty}" /var/service/
+ln -sf "/etc/sv/agetty-tty${tty}" /etc/runit/runsvdir/default/agetty-tty${tty}
+done
 
-# Hourly cache cleanup
-(crontab -l 2>/dev/null; echo '# Cleanup cache every hour') | crontab -
-(crontab -l 2>/dev/null; echo '0 * * * * find /var/cache/xbps -type f -mmin +60 -exec rm -f {} +') | crontab -
 
-# Hourly SSD trim
-(crontab -l 2>/dev/null; echo '05 * * * * /usr/sbin/fstrim -a') | crontab -
+####
 
-# Network configuration
+# Create service symlinks in default
+##cd /etc/runit/runsvdir/default
+# Core SERVICEs
+#udev  apparmor
 rm -f /var/service/dhcpcd-eth0
-ln -sf /etc/sv/dhcpcd /var/service/ 2>/dev/null || true
+mkdir -p /var/run/dbus
+chmod 755 /var/run/dbus
 
-# Firewall configuration
-ufw allow 5900:5905/tcp
-ufw allow 222/tcp
-ufw --force enable || echo "Firewall state configured for first boot"
+ln -sf /etc/sv/dbus /etc/runit/runsvdir/default/
+# 2. Only then start NetworkManager
+ln -sf /etc/sv/NetworkManager /etc/runit/runsvdir/default/
+for sv in  agetty-ttyAMA0 ufw socklog-unix nanoklogd \
+          cronie sshd; do
+#    [ -f /etc/sv/$sv/run ] && ln -sf /etc/sv/$sv .
+ln -sf /etc/sv/$sv  /etc/runit/runsvdir/default/
+# /var/service/
+done
 
-echo "== mounts =="
-mount | grep -E ' /boot/efi | /boot/efi '
+#enables them
+#ln -sf default /etc/runit/runsvdir/current
+#ln -sf /etc/sv/agetty-ttyAMA0 /var/service/
+#ln -sf /etc/sv/dhcpcd /var/service/ 2>/dev/null || true
+####
+ufw allow 5900:5905/tcp 2>/dev/null || true
+ufw allow 222/tcp 2>/dev/null || true
+ufw --force enable 2>/dev/null || true
 
-echo "== type/space =="
-df -hT /boot/efi
+# ==============================================================================
+# AUTODETECT KERNEL VERSION
+# ==============================================================================
 
-echo "== dirs =="
-ls -ld /boot/efi /boot/efi/Default || true
-findmnt -n -o SOURCE /boot/efi || true
+KVER=$(ls -1 /lib/modules | grep -v build | head -1)
+if [ -z "$KVER" ]; then
+    echo "ERROR: Kernel not installed!"
+    exit 1
+fi
 
-echo "== write test =="
-mkdir -p /boot/efi/Default && touch /boot/efi/Default/write_test_$$ && rm -f /boot/efi/Default/write_test_$$ && echo OK || echo FAIL
-# Initramfs generation
-TARGET_KERNEL_VERSION=$(ls -1 /lib/modules | head -n 1)
-echo "Building Initramfs Storage Track Drivers for Kernel version: $TARGET_KERNEL_VERSION"
-#dracut --force --hostonly --add "xfs"
+echo "Detected kernel version: $KVER"
 
- mkdir -p /boot/efi/EFI/BOOT
- dracut --force --regenerate-all
-#xbps-reconfigure -fa linux-lts
+MAJOR_VERSION=$(uname -r | awk -F '.' '{print $1}')
+MINOR_VERSION=$(uname -r | awk -F '.' '{print $2}')
+VERSION=${MAJOR_VERSION}.${MINOR_VERSION}
+#dracut -f
+#decompress xfs modules
+zstd -d /lib/modules/$KVER/kernel/fs/xfs/xfs.ko.zst -o /lib/modules/$KVER/kernel/fs/xfs/xfs.ko
+zstd -d /lib/modules/$KVER/kernel/lib/libcrc32c.ko.zst -o /lib/modules/$KVER/kernel/lib/libcrc32c.ko
+rm /lib/modules/$KVER/kernel/fs/xfs/xfs.ko.zst
+rm /lib/modules/$KVER/kernel/lib/libcrc32c.ko.zst
 
-xbps-reconfigure -f linux-lts
-update-grub
-grub-mkconfig -o /boot/grub/grub.cfg
-#dracut --force /boot/initramfs-$(uname -r).img $(uname -r) --add 'xfs'
-#£ dracut --force --regenerate-all --add 'xfs efi-vars'
-# --add 'efi-vars'
-# Cleanup orphaned packages and cache
-xbps-remove -O --yes
-xbps-remove -o --yes
+depmod -a $KVER
+dracut --force --regenerate-all
+#The second dracut run is what actually includes the uncompressed files in the initramfs image.
+#xbps-reconfigure -fa "linux${VERSION}" 2>/dev/null || xbps-reconfigure -fa linux6.12 || true
+
+grub-install --target="$GRUB_TARGET" \
+    --efi-directory=/boot/efi \
+    --bootloader-id=VOID \
+    --force \
+    --no-nvram \
+    --recheck 2>&1 | grep -v "Error\|Warning" || true
+
+# ==============================================================================
+# GRUB2 SETUP (cat-based, no corruption)
+# ==============================================================================
+
+echo "Installing GRUB2 EFI..."
+mkdir -p /boot/grub /boot/efi/EFI/VOID /boot/efi/EFI/BOOT
+
+cp /usr/lib/grub/x86_64-efi/grubx64.efi /boot/efi/EFI/VOID/ 2>/dev/null || true
+cp /usr/lib/grub/x86_64-efi/grubx64.efi /boot/efi/EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
+cp /usr/lib/grub/arm64-efi/grubaa64.efi /boot/efi/EFI/VOID/ 2>/dev/null || true
+cp /usr/lib/grub/arm64-efi/grubaa64.efi /boot/efi/EFI/BOOT/BOOTAA64.EFI 2>/dev/null || true
+cp /boot/efi/efi/void/grubaa64.efi /boot/efi/EFI/BOOT/BOOTAA64.EFI 2>/dev/null || true
+
+
+VMLINUX=$(ls /boot/vmlinux-* 2>/dev/null | head -1 | xargs basename)
+INITRD=$(ls /boot/initramfs-*.img 2>/dev/null | head -1 | xargs basename)
+
+cat > /boot/grub/grub.cfg <<GRUBCFG
+set timeout=5
+set root='hd0,gpt2'
+insmod part_gpt
+insmod ext2
+insmod btrfs
+insmod xfs
+
+menuentry "Void Linux" {
+    insmod gzio
+    insmod part_gpt
+    set root='hd0,gpt2'
+    linux /boot/$VMLINUX root=/dev/vda2 rootfstype=$FS_TYPE $FINALROOTFLAG console=tty0 console=ttyAMA0,115200 rw
+    initrd /boot/$INITRD
+}
+GRUBCFG
+
+chmod 644 /boot/grub/grub.cfg
+
+echo "🔍 Verifying GRUB2..."
+[ -f /boot/grub/grub.cfg ] && echo "✅ GRUB config: $(wc -c < /boot/grub/grub.cfg) bytes" || echo "❌ GRUB config missing"
+[ -f "/boot/$VMLINUX" ] && echo "✅ Kernel found: $VMLINUX" || echo "❌ Kernel missing"
+[ -f "/boot/$INITRD" ] && echo "✅ Initrd found: $INITRD" || echo "❌ Initrd missing"
+#
+#rm /var/service
+#mkdir -p /var/service
+#for dir in /etc/sv/*; do
+#  [ -d "$dir" ] && ln -sf "$dir" /var/service/
+#done
+
+echo "🔍 Verifying runit..."
+[ -L /sbin/init ] && echo "✅ /sbin/init linked" || echo "❌ /sbin/init broken"
+[ -d /var/service ] && echo "✅ /var/service exists" || echo "❌ /var/service missing"
+
+xbps-remove -O --yes 2>/dev/null || true
+xbps-remove -o --yes 2>/dev/null || true
 rm -rf /var/cache/xbps/*
 
-# Skip NVRAM operations in cross-compilation environments
-if [ "$(uname -m)" = "$TARGET_ARCH" ]; then
-    efibootmgr -v || echo 'EFI boot entry mapped'
-else
-    echo "Cross-compiling environment: NVRAM variable synchronization skipped."
-fi
-
-#prints
-#grub-mkconfig -T -o /boot/grub/grub.cfg   # -T = test mode, prints errors only
-echo 'boot folder:'
-ls /boot
-# 2️⃣  Confirm XFS driver is inside the initramfs
-#lsinitrd /boot/initramfs-$(uname -r).img | grep xfs
-
-# 3️⃣  Look at the generated menuentry (should contain the UUID you passed)
-#grep -A2 '^menuentry' /boot/grub/grub.cfg | head -n 6
-cat /boot/grub/grub.cfg
-
-# Create fallback EFI boot file
-if [ "$INSTALL_MODE" = "wipe" ]; then
-    echo 'Creating fallback EFI boot file'
-    cp "/boot/efi/EFI/grub/$GRUB_SRC_BIN" "/boot/efi/EFI/BOOT/$EFI_FALLBACK_BIN"
-fi
-
-# Trim filesystem if native architecture
-if [ "$(uname -m)" = "$TARGET_ARCH" ]; then
-    fstrim -a  || echo "Fstrim skipped"
-fi
-
-# Call file system-specific optimizations if available
-if [ -f /tmp/fs_optimize.sh ]; then
-    sh /tmp/fs_optimize.sh
-    rm -f /tmp/fs_optimize.sh
-fi
+sync
+echo "✅ GRUB2 EFI system ready for boot!"
 EOF
-####END
-mkdir -p /etc/kernel/post-install.d
-cat > /etc/kernel/post-install.d/99-update-boot <<'EFF'
-mount -o remount,rw /boot/efi
-touch /boot/efi/Default/test_write_$$ 2>&1 | cat
-ls -ld /boot/efi /boot/efi/Default || true
-KVER="$1"
-if command -v dracut >/dev/null 2>&1; then
-  dracut --force --kver "$KVER" --hostonly --add "xfs"
-fi
-grub-mkconfig -o /boot/grub/grub.cfg || true
-
-
-EFF
-chmod +x /etc/kernel/post-install.d/99-update-boot
 
 # Cleanup
-umount -flR /mnt || true
 sync
 echo "SUCCESS!"
-
-
