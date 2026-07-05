@@ -259,7 +259,7 @@ mkdir -p /var/run/dbus /var/log/dbus
 chmod 755 /var/run/dbus
 mkdir -p /var/spool/cron /var/tmp
 chmod 1777 /var/spool/cron /var/tmp
-mkdir -p /var/{run,log,service,spool/cron/crontabs,tmp}
+mkdir -p /var/{run,log,spool/cron/crontabs,tmp}
 touch /var/run/utmp /var/log/wtmp
 chmod 666 /var/run/utmp /var/log/wtmp
 
@@ -277,13 +277,14 @@ xbps-install -Sy --yes base-system efibootmgr "$GRUB_PKG" "$FS_PKGS" \
     util-linux net-tools sudo zip git curl tar gzip parted vsv socklog-void \
     lvm2 xmirror openssh apparmor ufw fastfetch dracut-uefi zstd
 #fix runit
-# rm -rf var/service run/runit
-# mkdir -p run/runit/runsvdir
-# mkdir -p var/service
 mkdir -p /etc/runit/runsvdir/default
 chmod 755 /etc/runit/runsvdir/default/
-rm /etc/runit/runsvdir/current
+rm -f /etc/runit/runsvdir/current
 ln -sf /etc/runit/runsvdir/default /etc/runit/runsvdir/current
+
+# CRITICAL FIX: Link /var/service to /etc/runit/runsvdir/default
+rm -rf /var/service
+ln -sf /etc/runit/runsvdir/default /var/service
 
 # ==============================================================================
 # GRUB2 EFI CONFIGURATION
@@ -356,9 +357,12 @@ ln -sf /etc/sv/dbus /etc/runit/runsvdir/default/
 ln -sf /etc/sv/NetworkManager /etc/runit/runsvdir/default/
 for sv in  agetty-ttyAMA0 ufw socklog-unix nanoklogd \
           cronie sshd; do
-#    [ -f /etc/sv/$sv/run ] && ln -sf /etc/sv/$sv .
-ln -sf /etc/sv/$sv  /etc/runit/runsvdir/default/
-# /var/service/
+    if [ -f /etc/sv/$sv/run ]; then
+        ln -sf /etc/sv/$sv  /etc/runit/runsvdir/default/
+        echo "✓ Enabled $sv"
+    else
+        echo "⚠ Service $sv not found"
+    fi
 done
 
 #enables them
@@ -453,7 +457,8 @@ echo "🔍 Verifying GRUB2..."
 
 echo "🔍 Verifying runit..."
 [ -L /sbin/init ] && echo "✅ /sbin/init linked" || echo "❌ /sbin/init broken"
-[ -d /var/service ] && echo "✅ /var/service exists" || echo "❌ /var/service missing"
+[ -L /var/service ] && echo "✅ /var/service symlinked" || echo "❌ /var/service not a symlink"
+ls -la /var/service 2>/dev/null | head -5 && echo "✅ Services discoverable" || echo "❌ /var/service broken"
 
 xbps-remove -O --yes 2>/dev/null || true
 xbps-remove -o --yes 2>/dev/null || true
