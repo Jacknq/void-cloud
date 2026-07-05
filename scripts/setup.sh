@@ -276,15 +276,28 @@ xbps-install -Sy --yes base-system efibootmgr "$GRUB_PKG" "$FS_PKGS" \
     NetworkManager cronie nano xtools wget chrony grep sed \
     util-linux net-tools sudo zip git curl tar gzip parted vsv socklog-void \
     lvm2 xmirror openssh apparmor ufw fastfetch dracut-uefi zstd
-#fix runit
-mkdir -p /etc/runit/runsvdir/default
-chmod 755 /etc/runit/runsvdir/default/
-rm -f /etc/runit/runsvdir/current
-ln -sf /etc/runit/runsvdir/default /etc/runit/runsvdir/current
 
-# CRITICAL FIX: Link /var/service to /etc/runit/runsvdir/default
+# ==============================================================================
+# FIX RUNIT STRUCTURE - DO THIS BEFORE CREATING SYMLINKS
+# ==============================================================================
+echo "🔧 Setting up runit supervision structure..."
+
+# Ensure the runit directory structure exists
+mkdir -p /etc/runit/runsvdir/default
+chmod 755 /etc/runit/runsvdir/default
+
+# Remove any existing broken symlinks/files
+rm -f /etc/runit/runsvdir/current
 rm -rf /var/service
+
+# Create /var/service as a SYMLINK (not a directory!)
+mkdir -p /var/run/runit
 ln -sf /etc/runit/runsvdir/default /var/service
+
+# Link /etc/runit/runsvdir/current to default (runsvdir reads this)
+ln -sf default /etc/runit/runsvdir/current
+
+echo "✅ Runit structure ready"
 
 # ==============================================================================
 # GRUB2 EFI CONFIGURATION
@@ -328,7 +341,6 @@ BAUD=115200
 TERM=linux
 AGETTY_ARGS=--autologin root
 EOS
-#ln -sf /etc/sv/agetty-ttyAMA0 /var/service/
 
 for tty in 1 2 3 4 5 6; do
     mkdir -p "/etc/sv/agetty-tty${tty}"
@@ -337,39 +349,26 @@ for tty in 1 2 3 4 5 6; do
 exec /sbin/agetty --noclear tty${tty} linux
 EOS
     chmod +x "/etc/sv/agetty-tty${tty}/run"
-   # ln -sf "/etc/sv/agetty-tty${tty}" /var/service/
-ln -sf "/etc/sv/agetty-tty${tty}" /etc/runit/runsvdir/default/agetty-tty${tty}
+    ln -sf "/etc/sv/agetty-tty${tty}" /var/service/agetty-tty${tty}
 done
 
+# ==============================================================================
+# ENABLE CORE SERVICES
+# ==============================================================================
+echo "📌 Enabling core services..."
 
-####
-
-# Create service symlinks in default
-##cd /etc/runit/runsvdir/default
-# Core SERVICEs
-#udev  apparmor
-rm -f /var/service/dhcpcd-eth0
 mkdir -p /var/run/dbus
 chmod 755 /var/run/dbus
 
-ln -sf /etc/sv/dbus /etc/runit/runsvdir/default/
-# 2. Only then start NetworkManager
-ln -sf /etc/sv/NetworkManager /etc/runit/runsvdir/default/
-for sv in  agetty-ttyAMA0 ufw socklog-unix nanoklogd \
-          cronie sshd; do
-    if [ -f /etc/sv/$sv/run ]; then
-        ln -sf /etc/sv/$sv  /etc/runit/runsvdir/default/
-        echo "✓ Enabled $sv"
+# Enable essential services - check they exist first
+for sv in dbus NetworkManager agetty-ttyAMA0 socklog-unix nanoklogd cronie sshd ufw; do
+    if [ -d "/etc/sv/$sv" ] && [ -f "/etc/sv/$sv/run" ]; then
+        ln -sf "/etc/sv/$sv" /var/service/ 2>/dev/null && echo "  ✓ $sv"
     else
-        echo "⚠ Service $sv not found"
+        echo "  ⚠ $sv not found, skipping"
     fi
 done
 
-#enables them
-#ln -sf default /etc/runit/runsvdir/current
-#ln -sf /etc/sv/agetty-ttyAMA0 /var/service/
-#ln -sf /etc/sv/dhcpcd /var/service/ 2>/dev/null || true
-####
 ufw allow 5900:5905/tcp 2>/dev/null || true
 ufw allow 222/tcp 2>/dev/null || true
 ufw --force enable 2>/dev/null || true
@@ -448,17 +447,14 @@ echo "🔍 Verifying GRUB2..."
 [ -f /boot/grub/grub.cfg ] && echo "✅ GRUB config: $(wc -c < /boot/grub/grub.cfg) bytes" || echo "❌ GRUB config missing"
 [ -f "/boot/$VMLINUX" ] && echo "✅ Kernel found: $VMLINUX" || echo "❌ Kernel missing"
 [ -f "/boot/$INITRD" ] && echo "✅ Initrd found: $INITRD" || echo "❌ Initrd missing"
-#
-#rm /var/service
-#mkdir -p /var/service
-#for dir in /etc/sv/*; do
-#  [ -d "$dir" ] && ln -sf "$dir" /var/service/
-#done
 
 echo "🔍 Verifying runit..."
 [ -L /sbin/init ] && echo "✅ /sbin/init linked" || echo "❌ /sbin/init broken"
-[ -L /var/service ] && echo "✅ /var/service symlinked" || echo "❌ /var/service not a symlink"
-ls -la /var/service 2>/dev/null | head -5 && echo "✅ Services discoverable" || echo "❌ /var/service broken"
+[ -L /var/service ] && echo "✅ /var/service is symlink" || echo "❌ /var/service is NOT a symlink"
+[ -L /etc/runit/runsvdir/current ] && echo "✅ runsvdir/current is symlink" || echo "❌ runsvdir/current broken"
+
+echo "📂 Services in /var/service:"
+ls -la /var/service/ | head -10
 
 xbps-remove -O --yes 2>/dev/null || true
 xbps-remove -o --yes 2>/dev/null || true
