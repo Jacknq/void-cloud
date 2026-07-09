@@ -73,8 +73,8 @@ jobs:
           echo "⚠️  ISO download failed, will use locally available tools"
           ls -lh /tmp/void-iso/ || echo "No ISO downloaded"
           
-     - name: Create base QCOW2 image
-       run: |
+      - name: Create base QCOW2 image
+        run: |
             mkdir -p /tmp/vm-storage
             cd /tmp/vm-storage
             
