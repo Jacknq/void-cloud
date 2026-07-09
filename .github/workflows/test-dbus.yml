@@ -72,27 +72,30 @@ jobs:
           wget -q https://repo-default.voidlinux.org/live/current/void-live-arm64.iso 2>/dev/null || \
           echo "⚠️  ISO download failed, will use locally available tools"
           ls -lh /tmp/void-iso/ || echo "No ISO downloaded"
-
-      - name: Create base QCOW2 image
-        run: |
-          mkdir -p /tmp/vm-storage
-          cd /tmp/vm-storage
           
-          echo "Creating ${QCOW_IMAGE} (20GB)..."
-          qemu-img create -f qcow2 ${QCOW_IMAGE} 20G
-          qemu-img info ${QCOW_IMAGE}
-          
-          # Allocate loop device for direct access
-          sudo losetup -f
-          LOOP_DEV=$(sudo losetup -f)
-          echo "Using loop device: $LOOP_DEV"
-          
-          # Create partitions on the qcow image via loop
-          sudo parted -s ${QCOW_IMAGE} mklabel gpt
-          sudo parted -s ${QCOW_IMAGE} mkpart primary fat32 1MiB 512MiB
-          sudo parted -s ${QCOW_IMAGE} mkpart primary ${{ inputs.filesystem }} 512MiB 100%
-          sudo parted -s ${QCOW_IMAGE} set 1 esp on
-          sudo parted -s ${QCOW_IMAGE} print
+     - name: Create base QCOW2 image
+      run: |
+            mkdir -p /tmp/vm-storage
+            cd /tmp/vm-storage
+            
+            echo "Creating ${QCOW_IMAGE} (20GB)..."
+            qemu-img create -f qcow2 ${QCOW_IMAGE} 20G
+            qemu-img info ${QCOW_IMAGE}
+            
+            # Allocate and attach loop device to the QCOW2 image
+            LOOP_DEV=$(sudo losetup -f)
+            echo "Using loop device: $LOOP_DEV"
+            sudo losetup ${LOOP_DEV} ${QCOW_IMAGE}
+            
+            # Now partition the loop device (not the QCOW2 file directly)
+            sudo parted -s ${LOOP_DEV} mklabel gpt
+            sudo parted -s ${LOOP_DEV} mkpart primary fat32 1MiB 512MiB
+            sudo parted -s ${LOOP_DEV} mkpart primary ${{ inputs.filesystem }} 512MiB 100%
+            sudo parted -s ${LOOP_DEV} set 1 esp on
+            sudo parted -s ${LOOP_DEV} print
+            
+            # Clean up loop device when done
+            sudo losetup -d ${LOOP_DEV}
 
       - name: Setup NBD for QCOW2 access
         run: |
