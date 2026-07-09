@@ -74,7 +74,7 @@ jobs:
           ls -lh /tmp/void-iso/ || echo "No ISO downloaded"
           
      - name: Create base QCOW2 image
-      run: |
+       run: |
             mkdir -p /tmp/vm-storage
             cd /tmp/vm-storage
             
