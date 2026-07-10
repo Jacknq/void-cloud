@@ -75,27 +75,16 @@ jobs:
           
       - name: Create base QCOW2 image
         run: |
-            mkdir -p /tmp/vm-storage
-            cd /tmp/vm-storage
-            
-            echo "Creating ${QCOW_IMAGE} (20GB)..."
-            qemu-img create -f qcow2 ${QCOW_IMAGE} 20G
-            qemu-img info ${QCOW_IMAGE}
-            
-            # Allocate and attach loop device to the QCOW2 image
-            LOOP_DEV=$(sudo losetup -f)
-            echo "Using loop device: $LOOP_DEV"
-            sudo losetup ${LOOP_DEV} ${QCOW_IMAGE}
-            
-            # Now partition the loop device (not the QCOW2 file directly)
-            sudo parted -s ${LOOP_DEV} mklabel gpt
-            sudo parted -s ${LOOP_DEV} mkpart primary fat32 1MiB 512MiB
-            sudo parted -s ${LOOP_DEV} mkpart primary ${{ inputs.filesystem }} 512MiB 100%
-            sudo parted -s ${LOOP_DEV} set 1 esp on
-            sudo parted -s ${LOOP_DEV} print
-            
-            # Clean up loop device when done
-            sudo losetup -d ${LOOP_DEV}
+              mkdir -p /tmp/vm-storage
+              cd /tmp/vm-storage
+
+              echo "Creating ${QCOW_IMAGE} (20 GiB)..."
+              # Create a fully‑preallocated image so the kernel sees the whole size
+              qemu-img create -f qcow2 -o preallocation=full ${QCOW_IMAGE} 20G
+
+              # Verify size
+              qemu-img info ${QCOW_IMAGE}
+
 
       - name: Setup NBD for QCOW2 access
         run: |
