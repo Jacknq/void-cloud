@@ -26,7 +26,7 @@ jobs:
 
     steps:
       # ------------------------------------------------------------------
-      # Checkout
+      # Checkout repository
       # ------------------------------------------------------------------
       - uses: actions/checkout@v4
 
@@ -37,7 +37,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            qemu-utils \          # provides qemu-nbd
+            qemu-utils \            # provides qemu-nbd
             qemu-system-arm \
             qemu-system-x86 \
             libvirt-daemon-system \
@@ -105,7 +105,7 @@ jobs:
           # Minimal pkgdb required by xbps‑install
           sudo touch /tmp/mnt/root/var/db/xbps/.pkgdb-0.plist
 
-          # If the runner already has xbps‑install, use it; otherwise skip (dbus will be installed later inside chroot)
+          # If the runner already has xbps‑install, use it; otherwise skip (dbus will be installed later in chroot)
           if command -v xbps-install >/dev/null; then
             sudo xbps-install -S -R https://repo-default.voidlinux.org/current \
               -r /tmp/mnt/root base-files base-system xbps
