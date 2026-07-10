@@ -4,16 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       filesystem:
-        description: 'Filesystem type (btrfs or xfs)'
+        description: Filesystem type
         required: true
-        default: 'xfs'
+        default: xfs
         type: choice
-        options:
-          - btrfs
-          - xfs
+        options: [btrfs, xfs]
   push:
-    branches:
-      - "**"
+    branches: ["**"]
 
 env:
   QCOW_IMAGE: void-build.qcow2
@@ -21,424 +18,139 @@ env:
   QEMU_ARCH: aarch64
 
 jobs:
-  test-dbus-build:
+  dbus-test:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
       contents: read
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      # ------------------------------------------------------------------
+      # Basic tools
+      # ------------------------------------------------------------------
+      - uses: actions/checkout@v4
 
-#      - name: Set up QEMU
-#        uses: docker/setup-qemu-action@v3
-
-      - name: Enable binfmt
-        run: | 
-              sudo apt-get update
-              sudo apt-get install -y qemu-user-static binfmt-support
-
-      - name: Install dependencies
+      - name: Install QEMU & libvirt tools
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y \
-            qemu-system-arm \
-            qemu-system-x86 \
-            qemu-utils \
-            libvirt-daemon-system \
-            libvirt-clients \
-            virtinst \
-            cloud-image-utils \
-            wget \
-            curl \
-            xfsprogs \
-            btrfs-progs \
-            parted \
-            util-linux
+          sudo apt-get update
+          sudo apt-get install -y qemu-utils qemu-nbd \
+            qemu-system-arm qemu-system-x86 \
+            libvirt-daemon-system libvirt-clients virtinst \
+            xfsprogs btrfs-progs parted util-linux
 
       - name: Start libvirtd
         run: |
           sudo systemctl start libvirtd
-          sudo systemctl status libvirtd
           sudo virsh list --all || true
 
-      - name: Download Void ARM ISO
+      # ------------------------------------------------------------------
+      # Create a pre‑allocated QCOW2 image (20 GiB)
+      # ------------------------------------------------------------------
+      - name: Create QCOW2 image
         run: |
-          mkdir -p /tmp/void-iso
-          cd /tmp/void-iso
-          echo "Downloading Void Linux ARM ISO..."
-          wget -q https://repo-default.voidlinux.org/live/current/void-live-arm64-20240101.iso 2>/dev/null || \
-          wget -q https://repo-default.voidlinux.org/live/current/void-live-arm64.iso 2>/dev/null || \
-          echo "⚠️  ISO download failed, will use locally available tools"
-          ls -lh /tmp/void-iso/ || echo "No ISO downloaded"
-          
-      - name: Create base QCOW2 image
-        run: |
-              mkdir -p /tmp/vm-storage
-              cd /tmp/vm-storage
+          mkdir -p /tmp/vm-storage
+          cd /tmp/vm-storage
+          qemu-img create -f qcow2 -o preallocation=full ${QCOW_IMAGE} 20G
+          qemu-img info ${QCOW_IMAGE}
 
-              echo "Creating ${QCOW_IMAGE} (20 GiB)..."
-              # Create a fully‑preallocated image so the kernel sees the whole size
-              qemu-img create -f qcow2 -o preallocation=full ${QCOW_IMAGE} 20G
-
-              # Verify size
-              qemu-img info ${QCOW_IMAGE}
-
-
-      - name: Setup NBD for QCOW2 access
+      # ------------------------------------------------------------------
+      # Attach via NBD (avoids loop‑device size problems)
+      # ------------------------------------------------------------------
+      - name: Attach QCOW2 with NBD
         run: |
           cd /tmp/vm-storage
-          
-          # Load NBD module
           sudo modprobe nbd max_part=16
-          
-          # Connect qcow2 via NBD
           sudo qemu-nbd --connect=/dev/nbd0 ${QCOW_IMAGE}
-          sleep 2
-          
-          # Wait for partitions
+          # wait for partitions to appear
           for i in {1..10}; do
-            if [ -e /dev/nbd0p1 ] && [ -e /dev/nbd0p2 ]; then
-              echo "✓ Partitions detected"
-              break
-            fi
-            echo "Waiting for partitions ($i/10)..."
+            [ -e /dev/nbd0p1 ] && [ -e /dev/nbd0p2 ] && break
             sleep 1
           done
-          
-          lsblk /dev/nbd0 || true
           sudo parted -s /dev/nbd0 print
 
-      - name: Format partitions
+      # ------------------------------------------------------------------
+      # Partition & format
+      # ------------------------------------------------------------------
+      - name: Partition & format
         run: |
-          echo "Formatting EFI partition..."
           sudo mkfs.vfat -n EFI /dev/nbd0p1
-          
-          echo "Formatting root partition (${{ inputs.filesystem }})..."
           if [ "${{ inputs.filesystem }}" = "btrfs" ]; then
             sudo mkfs.btrfs -f -L root /dev/nbd0p2
           else
             sudo mkfs.xfs -f -L root /dev/nbd0p2
           fi
-          
-          sudo blkid /dev/nbd0p* || true
 
+      # ------------------------------------------------------------------
+      # Mount and install a minimal Void base system
+      # ------------------------------------------------------------------
       - name: Mount and bootstrap Void
         run: |
-          set -x
-          
-          mkdir -p /tmp/mnt/root /tmp/mnt/efi
-          
-          echo "Mounting partitions..."
+          sudo mkdir -p /tmp/mnt/root /tmp/mnt/efi
           sudo mount /dev/nbd0p2 /tmp/mnt/root
           sudo mount /dev/nbd0p1 /tmp/mnt/efi
-          
-          # Verify mounts
-          mount | grep /tmp/mnt || true
-          df -h /tmp/mnt/* || true
-          
-          # Get current host's void tools
-          echo "Copying Void base files from host..."
-          sudo mkdir -p /tmp/mnt/root/var/cache/xbps
-          sudo mkdir -p /tmp/mnt/root/var/db/xbps/keys
-          sudo mkdir -p /tmp/mnt/root/etc
-          
-          # Copy xbps keys if available
-          if [ -d /var/db/xbps/keys ]; then
-            sudo cp -r /var/db/xbps/keys/* /tmp/mnt/root/var/db/xbps/keys/ 2>/dev/null || true
-          fi
-          
-          # Copy SSL certs
-          if [ -d /etc/ssl ]; then
-            sudo mkdir -p /tmp/mnt/root/etc/ssl
-            sudo cp -r /etc/ssl/* /tmp/mnt/root/etc/ssl/ 2>/dev/null || true
-          fi
-          
-          if [ -d /etc/ca-certificates ]; then
-            sudo mkdir -p /tmp/mnt/root/etc/ca-certificates
-            sudo cp -r /etc/ca-certificates/* /tmp/mnt/root/etc/ca-certificates/ 2>/dev/null || true
+
+          # Minimal pkgdb required by xbps‑install
+          sudo touch /tmp/mnt/root/var/db/xbps/.pkgdb-0.plist
+
+          # Install base packages from the host's xbps (if present)
+          if command -v xbps-install >/dev/null; then
+            sudo xbps-install -S -R https://repo-default.voidlinux.org/current \
+              -r /tmp/mnt/root base-files base-system xbps
           fi
 
-      - name: Prepare chroot environment
+      # ------------------------------------------------------------------
+      # Prepare chroot (bind required virtualfs)
+      # ------------------------------------------------------------------
+      - name: Prepare chroot
         run: |
-          set -x
-          
-          MNTROOT=/tmp/mnt/root
-          
-          # Create essential directories
-          for dir in dev proc sys run tmp var/run var/log var/cache var/lib etc/runit etc/sv root usr/bin usr/lib; do
-            sudo mkdir -p "$MNTROOT/$dir"
+          MNT=/tmp/mnt/root
+          for d in dev proc sys run; do
+            sudo mount --rbind /$d $MNT/$d
+            sudo mount --make-rslave $MNT/$d
           done
-          
-          # Mount virtual filesystems
-          sudo mount --rbind /sys "$MNTROOT/sys"
-          sudo mount --make-rslave "$MNTROOT/sys"
-          
-          sudo mount --rbind /dev "$MNTROOT/dev"
-          sudo mount --make-rslave "$MNTROOT/dev"
-          
-          sudo mount --rbind /proc "$MNTROOT/proc"
-          sudo mount --make-rslave "$MNTROOT/proc"
-          
-          sudo mount --bind /run "$MNTROOT/run"
-          sudo mount --make-slave "$MNTROOT/run"
-          
-          # Copy resolv.conf
-          sudo cp /etc/resolv.conf "$MNTROOT/etc/resolv.conf"
-          
-          # Copy setup.sh into chroot
-          sudo mkdir -p "$MNTROOT/root/scripts"
-          sudo cp scripts/setup.sh "$MNTROOT/root/scripts/"
-          sudo cp scripts/storage_*.sh "$MNTROOT/root/scripts/" 2>/dev/null || true
-          
-          sudo chmod +x "$MNTROOT/root/scripts/"*.sh
+          sudo cp /etc/resolv.conf $MNT/etc/resolv.conf
 
-      - name: Bootstrap minimal xbps
+      # ------------------------------------------------------------------
+      # Install dbus and enable runit service inside chroot
+      # ------------------------------------------------------------------
+      - name: Install & fix dbus in chroot
         run: |
-          set -x
-          
-          MNTROOT=/tmp/mnt/root
-          FS_TYPE="${{ inputs.filesystem }}"
-          
-          # Create minimal .pkgdb
-          sudo touch "$MNTROOT/var/db/xbps/.pkgdb-0.plist"
-          
-          # Use xbps-install from host to install into target
-          if command -v xbps-install >/dev/null 2>&1; then
-            echo "Installing base system using host xbps-install..."
-            sudo xbps-install -S -R "https://repo-default.voidlinux.org/current" -r "$MNTROOT" base-files || true
-          else
-            echo "⚠️  xbps-install not available on host, will attempt chroot bootstrap"
-          fi
+          sudo chroot /tmp/mnt/root /bin/bash -c '
+            export XBPS_ARCH=aarch64
+            export REPO_URL="https://repo-default.voidlinux.org/current/aarch64"
+            xbps-install -Sy dbus runit || exit 1
 
-      - name: Run setup.sh in chroot
+            # create runit service for dbus
+            mkdir -p /etc/sv/dbus
+            cat > /etc/sv/dbus/run <<EOF
+            #!/bin/sh
+            exec 2>&1
+            [ -d /var/run/dbus ] || mkdir -p /var/run/dbus
+            exec chpst -u messagebus /usr/bin/dbus-daemon --nofork --system
+            EOF
+                        chmod +x /etc/sv/dbus/run
+                        ln -sf /etc/sv/dbus /var/service/dbus
+                      '
+
+      # ------------------------------------------------------------------
+      # Verify dbus works
+      # ------------------------------------------------------------------
+      - name: Verify dbus
         run: |
-          set -x
-          
-          MNTROOT=/tmp/mnt/root
-          FS_TYPE="${{ inputs.filesystem }}"
-          
-          # Copy the setup script
-          sudo tee "$MNTROOT/tmp/run-setup.sh" > /dev/null <<'SETUP_EOF'
-          #!/bin/bash
-          set -x
-          
-          export XBPS_ARCH="aarch64"
-          export XBPS_TARGET_ARCH="aarch64"
-          export REPO_URL="https://repo-default.voidlinux.org/current/aarch64"
-          
-          # Mount boot if needed
-          mkdir -p /boot/efi
-          
-          # Install minimal tools first
-          echo "Installing base system packages..."
-          xbps-install -Syu --yes 2>&1 | tail -20 || true
-          xbps-install -Sy --yes \
-            base-files base-system bash linux-firmware \
-            dhcpcd nano parted curl wget \
-            xfsprogs btrfs-progs grub-arm64-efi \
-            dracut openssh coreutils || true
-          
-          echo "Base system installed"
-          ls -la /bin /usr/bin | head -20
-          
-          SETUP_EOF
-          
-          sudo chmod +x "$MNTROOT/tmp/run-setup.sh"
-          
-          # Enter chroot and run
-          echo "Entering chroot..."
-          sudo chroot "$MNTROOT" /bin/bash /tmp/run-setup.sh
+          sudo chroot /tmp/mnt/root /bin/bash -c '
+            if [ ! -S /var/run/dbus/system_bus_socket ]; then
+              /etc/sv/dbus/run &
+              sleep 2
+            fi
+            [[ -S /var/run/dbus/system_bus_socket ]] && echo "✓ dbus socket present" || { echo "✗ dbus socket missing"; exit 1; }
+            command -v dbus-send && dbus-send --system --print-reply /org/freedesktop/DBus /org/freedesktop/DBus.Introspectable.Introspect || true
+          '
 
-      - name: Diagnose dbus service
-        run: |
-          set -x
-          
-          MNTROOT=/tmp/mnt/root
-          
-          echo "=== DBUS DIAGNOSTICS ==="
-          
-          # Check if dbus package is installed
-          echo "Checking installed packages related to dbus..."
-          sudo chroot "$MNTROOT" xbps-query -l 2>/dev/null | grep -i dbus || echo "No dbus found"
-          
-          # Check dbus binary
-          echo "Locating dbus-daemon..."
-          sudo chroot "$MNTROOT" which dbus-daemon || echo "dbus-daemon not found"
-          
-          # Check service files
-          echo "Looking for dbus service definitions..."
-          sudo find "$MNTROOT/etc/sv" -name "*dbus*" -o -name "*bus*" 2>/dev/null || echo "No dbus service found in /etc/sv"
-          
-          # Check runit structure
-          echo "Checking runit structure..."
-          sudo ls -la "$MNTROOT/etc/runit/" || true
-          sudo ls -la "$MNTROOT/etc/sv/" | head -20 || true
-          
-          # Check for service symlinks
-          echo "Service symlinks in /var/service..."
-          sudo ls -la "$MNTROOT/var/service/" 2>/dev/null || echo "No /var/service found"
-
-      - name: Fix dbus service
-        run: |
-          set -x
-          
-          MNTROOT=/tmp/mnt/root
-          
-          echo "=== FIXING DBUS SERVICE ==="
-          
-          # Create fix script
-          sudo tee "$MNTROOT/tmp/fix-dbus.sh" > /dev/null <<'FIX_EOF'
-          #!/bin/bash
-          set -x
-          
-          export REPO_URL="https://repo-default.voidlinux.org/current/aarch64"
-          
-          # Install dbus explicitly
-          echo "Installing dbus package..."
-          xbps-install -Sy --yes dbus || {
-            echo "WARNING: dbus install may have failed"
-          }
-          
-          # Verify dbus-daemon exists
-          if [ ! -f /usr/bin/dbus-daemon ]; then
-            echo "ERROR: dbus-daemon not found after install"
-            ls -la /usr/bin/dbus* || true
-            exit 1
-          fi
-          
-          # Create dbus service directory if missing
-          mkdir -p /etc/sv/dbus
-          mkdir -p /var/run/dbus
-          chmod 755 /var/run/dbus
-          
-          # Create run script for dbus service
-          cat > /etc/sv/dbus/run <<'RUNEOF'
-          #!/bin/sh
-          exec 2>&1
-          [ -d /var/run/dbus ] || mkdir -p /var/run/dbus
-          exec chpst -u messagebus /usr/bin/dbus-daemon --nofork --system
-          RUNEOF
-          
-          chmod 755 /etc/sv/dbus/run
-          
-          # Create finish script
-          cat > /etc/sv/dbus/finish <<'FINEOF'
-          #!/bin/sh
-          sv force-stop dbus
-          FINEOF
-          
-          chmod 755 /etc/sv/dbus/finish
-          
-          # Create check script
-          cat > /etc/sv/dbus/check <<'CHECKEOF'
-          #!/bin/sh
-          [ -S /var/run/dbus/system_bus_socket ] || exit 1
-          CHECKEOF
-          
-          chmod 755 /etc/sv/dbus/check
-          
-          # Ensure messagebus user exists
-          if ! getent passwd messagebus >/dev/null; then
-            echo "Creating messagebus user..."
-            useradd -r -s /bin/false messagebus 2>/dev/null || true
-          fi
-          
-          # Fix permissions
-          chown -R messagebus:messagebus /var/run/dbus /var/lib/dbus 2>/dev/null || true
-          
-          # Link dbus into default runlevel
-          mkdir -p /var/service
-          rm -f /var/service/dbus
-          ln -sf /etc/sv/dbus /var/service/dbus
-          
-          # Verify setup
-          echo "=== VERIFICATION ==="
-          ls -la /etc/sv/dbus/
-          ls -la /var/service/ | grep dbus
-          
-          FIX_EOF
-          
-          sudo chmod +x "$MNTROOT/tmp/fix-dbus.sh"
-          
-          # Run the fix script in chroot
-          echo "Running dbus fix script..."
-          sudo chroot "$MNTROOT" /bin/bash /tmp/fix-dbus.sh
-
-      - name: Test dbus functionality
-        run: |
-          set -x
-          
-          MNTROOT=/tmp/mnt/root
-          
-          echo "=== TESTING DBUS ==="
-          
-          # Create test script
-          sudo tee "$MNTROOT/tmp/test-dbus.sh" > /dev/null <<'TEST_EOF'
-          #!/bin/bash
-          set -x
-          
-          # Start dbus if not running
-          if [ ! -S /var/run/dbus/system_bus_socket ]; then
-            echo "Starting dbus service..."
-            /etc/sv/dbus/run &
-            DBUS_PID=$!
-            sleep 2
-          fi
-          
-          # Check if socket exists
-          if [ -S /var/run/dbus/system_bus_socket ]; then
-            echo "✓ DBUS socket created successfully"
-            ls -la /var/run/dbus/
-          else
-            echo "✗ DBUS socket NOT found"
-            exit 1
-          fi
-          
-          # Check service file
-          if [ -f /usr/share/dbus-1/system.conf ]; then
-            echo "✓ DBUS system config exists"
-          fi
-          
-          # List service directory
-          echo "DBUS service files:"
-          ls -la /usr/share/dbus-1/system-services/ 2>/dev/null | head -10 || echo "No system-services directory"
-          
-          # Test dbus-send if available
-          if command -v dbus-send >/dev/null 2>&1; then
-            echo "Testing dbus-send..."
-            dbus-send --system --print-reply /org/freedesktop/DBus /org/freedesktop/DBus.Introspectable.Introspect || true
-          fi
-          
-          TEST_EOF
-          
-          sudo chmod +x "$MNTROOT/tmp/test-dbus.sh"
-          sudo chroot "$MNTROOT" /bin/bash /tmp/test-dbus.sh
-
+      # ------------------------------------------------------------------
+      # Cleanup
+      # ------------------------------------------------------------------
       - name: Cleanup
         if: always()
         run: |
-          set +e
-          
-          echo "Cleaning up mounts..."
-          sudo umount -flR /tmp/mnt/root 2>/dev/null || true
-          
-          echo "Disconnecting NBD..."
+          sudo umount -R /tmp/mnt/root || true
           sudo qemu-nbd --disconnect /dev/nbd0 || true
-          
-          echo "Removing loop devices..."
-          sudo losetup -D || true
-          
-          echo "Cleanup complete"
-
-      - name: Summary
-        if: always()
-        run: |
-          echo "=== WORKFLOW SUMMARY ==="
-          echo "✓ Created QCOW2 image with ${{ inputs.filesystem }}"
-          echo "✓ Bootstrapped Void Linux ARM64"
-          echo "✓ Ran setup.sh in chroot environment"
-          echo "✓ Diagnosed dbus service issues"
-          echo "✓ Applied dbus fixes"
-          echo "✓ Tested dbus functionality"
