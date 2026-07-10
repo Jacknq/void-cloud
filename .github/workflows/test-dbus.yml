@@ -26,25 +26,34 @@ jobs:
 
     steps:
       # ------------------------------------------------------------------
-      # Basic tools
+      # Checkout repo
       # ------------------------------------------------------------------
       - uses: actions/checkout@v4
 
+      # ------------------------------------------------------------------
+      # Install QEMU, libvirt and the *qemu‑nbd* binary
+      # ------------------------------------------------------------------
       - name: Install QEMU & libvirt tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-utils qemu-nbd \
-            qemu-system-arm qemu-system-x86 \
+          sudo apt-get install -y \
+            qemu-utils \          # provides qemu-nbd
+            qemu-system-arm \
+            qemu-system-x86 \
+            qemu-system-common \ # ensures qemu-nbd on newer Ubuntu releases
             libvirt-daemon-system libvirt-clients virtinst \
             xfsprogs btrfs-progs parted util-linux
 
+      # ------------------------------------------------------------------
+      # Start libvirtd (required for later virsh steps)
+      # ------------------------------------------------------------------
       - name: Start libvirtd
         run: |
           sudo systemctl start libvirtd
           sudo virsh list --all || true
 
       # ------------------------------------------------------------------
-      # Create a pre‑allocated QCOW2 image (20 GiB)
+      # Create a pre‑allocated 20 GiB QCOW2 image
       # ------------------------------------------------------------------
       - name: Create QCOW2 image
         run: |
@@ -54,7 +63,7 @@ jobs:
           qemu-img info ${QCOW_IMAGE}
 
       # ------------------------------------------------------------------
-      # Attach via NBD (avoids loop‑device size problems)
+      # Attach the image via NBD (avoids loop‑device size issues)
       # ------------------------------------------------------------------
       - name: Attach QCOW2 with NBD
         run: |
@@ -69,7 +78,7 @@ jobs:
           sudo parted -s /dev/nbd0 print
 
       # ------------------------------------------------------------------
-      # Partition & format
+      # Partition & format (EFI + root)
       # ------------------------------------------------------------------
       - name: Partition & format
         run: |
@@ -81,7 +90,7 @@ jobs:
           fi
 
       # ------------------------------------------------------------------
-      # Mount and install a minimal Void base system
+      # Mount and bootstrap a minimal Void Linux base
       # ------------------------------------------------------------------
       - name: Mount and bootstrap Void
         run: |
@@ -92,14 +101,14 @@ jobs:
           # Minimal pkgdb required by xbps‑install
           sudo touch /tmp/mnt/root/var/db/xbps/.pkgdb-0.plist
 
-          # Install base packages from the host's xbps (if present)
+          # If the host already has xbps‑install, use it; otherwise skip (the later chroot step will install dbus directly)
           if command -v xbps-install >/dev/null; then
             sudo xbps-install -S -R https://repo-default.voidlinux.org/current \
               -r /tmp/mnt/root base-files base-system xbps
           fi
 
       # ------------------------------------------------------------------
-      # Prepare chroot (bind required virtualfs)
+      # Bind‑mount virtual filesystems for chroot
       # ------------------------------------------------------------------
       - name: Prepare chroot
         run: |
@@ -111,7 +120,7 @@ jobs:
           sudo cp /etc/resolv.conf $MNT/etc/resolv.conf
 
       # ------------------------------------------------------------------
-      # Install dbus and enable runit service inside chroot
+      # Install dbus and create a runit service inside the chroot
       # ------------------------------------------------------------------
       - name: Install & fix dbus in chroot
         run: |
@@ -120,7 +129,7 @@ jobs:
             export REPO_URL="https://repo-default.voidlinux.org/current/aarch64"
             xbps-install -Sy dbus runit || exit 1
 
-            # create runit service for dbus
+            # Create runit service for dbus
             mkdir -p /etc/sv/dbus
             cat > /etc/sv/dbus/run <<EOF
             #!/bin/sh
@@ -133,17 +142,26 @@ jobs:
                       '
 
       # ------------------------------------------------------------------
-      # Verify dbus works
+      # Verify dbus works inside the chroot
       # ------------------------------------------------------------------
       - name: Verify dbus
         run: |
           sudo chroot /tmp/mnt/root /bin/bash -c '
+            # start the service if the socket is missing
             if [ ! -S /var/run/dbus/system_bus_socket ]; then
               /etc/sv/dbus/run &
               sleep 2
             fi
-            [[ -S /var/run/dbus/system_bus_socket ]] && echo "✓ dbus socket present" || { echo "✗ dbus socket missing"; exit 1; }
-            command -v dbus-send && dbus-send --system --print-reply /org/freedesktop/DBus /org/freedesktop/DBus.Introspectable.Introspect || true
+
+            if [ -S /var/run/dbus/system_bus_socket ]; then
+              echo "✅ dbus socket created"
+            else
+              echo "❌ dbus socket missing"
+              exit 1
+            fi
+
+            command -v dbus-send && dbus-send --system --print-reply \
+              /org/freedesktop/DBus /org/freedesktop/DBus.Introspectable.Introspect || true
           '
 
       # ------------------------------------------------------------------
