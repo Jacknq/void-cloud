@@ -26,12 +26,12 @@ jobs:
 
     steps:
       # ------------------------------------------------------------------
-      # Checkout repo
+      # Checkout
       # ------------------------------------------------------------------
       - uses: actions/checkout@v4
 
       # ------------------------------------------------------------------
-      # Install QEMU, libvirt and the *qemu‑nbd* binary
+      # Install QEMU, libvirt and the qemu‑nbd binary
       # ------------------------------------------------------------------
       - name: Install QEMU & libvirt tools
         run: |
@@ -40,9 +40,13 @@ jobs:
             qemu-utils \          # provides qemu-nbd
             qemu-system-arm \
             qemu-system-x86 \
-            qemu-system-common \ # ensures qemu-nbd on newer Ubuntu releases
-            libvirt-daemon-system libvirt-clients virtinst \
-            xfsprogs btrfs-progs parted util-linux
+            libvirt-daemon-system \
+            libvirt-clients \
+            virtinst \
+            xfsprogs \
+            btrfs-progs \
+            parted \
+            util-linux
 
       # ------------------------------------------------------------------
       # Start libvirtd (required for later virsh steps)
@@ -63,7 +67,7 @@ jobs:
           qemu-img info ${QCOW_IMAGE}
 
       # ------------------------------------------------------------------
-      # Attach the image via NBD (avoids loop‑device size issues)
+      # Attach the image via NBD (avoids loop‑device size problems)
       # ------------------------------------------------------------------
       - name: Attach QCOW2 with NBD
         run: |
@@ -78,7 +82,7 @@ jobs:
           sudo parted -s /dev/nbd0 print
 
       # ------------------------------------------------------------------
-      # Partition & format (EFI + root)
+      # Partition and format (EFI + root)
       # ------------------------------------------------------------------
       - name: Partition & format
         run: |
@@ -101,7 +105,7 @@ jobs:
           # Minimal pkgdb required by xbps‑install
           sudo touch /tmp/mnt/root/var/db/xbps/.pkgdb-0.plist
 
-          # If the host already has xbps‑install, use it; otherwise skip (the later chroot step will install dbus directly)
+          # If the runner already has xbps‑install, use it; otherwise skip (dbus will be installed later inside chroot)
           if command -v xbps-install >/dev/null; then
             sudo xbps-install -S -R https://repo-default.voidlinux.org/current \
               -r /tmp/mnt/root base-files base-system xbps
@@ -147,7 +151,7 @@ jobs:
       - name: Verify dbus
         run: |
           sudo chroot /tmp/mnt/root /bin/bash -c '
-            # start the service if the socket is missing
+            # start service if socket missing
             if [ ! -S /var/run/dbus/system_bus_socket ]; then
               /etc/sv/dbus/run &
               sleep 2
