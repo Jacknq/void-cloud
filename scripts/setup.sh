@@ -241,7 +241,7 @@ mkdir -p /mnt/etc/runit/runsvdir/default
 # ==============================================================================
 # PHASE 6: CHROOT ENTRY (Package installation happens here)
 # ==============================================================================
-env UUID_FS="$UUID_FS" FS_TYPE="$FS_TYPE" FS_PKGS="$FS_PKGS" INSTALL_MODE="$INSTALL_MODE" \
+env UUID_FS="$UUID_ROOT" FS_TYPE="$FS_TYPE" FS_PKGS="$FS_PKGS" INSTALL_MODE="$INSTALL_MODE" \
     TARGET_ARCH="$TARGET_ARCH" GRUB_PKG="$GRUB_PKG" GRUB_TARGET="$GRUB_TARGET" \
     EFI_FALLBACK_DIR="$EFI_FALLBACK_DIR" EFI_FALLBACK_BIN="$EFI_FALLBACK_BIN" \
     GRUB_SRC_BIN="$GRUB_SRC_BIN" XBPS_ARCH="$XBPS_TARGET_ARCH" REPO_URL="$REPO_URL" \
