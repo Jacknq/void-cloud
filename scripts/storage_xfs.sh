@@ -38,8 +38,8 @@ setup_mounts() {
 generate_fstab() {
     echo "=== 9. Inverting explicit storage mounts mapping table ==="
     UUID_XFS=$(blkid -o value -s UUID "$PART2")
-    UUID_EFI=$(blkid -o value -s UUID "$PART1")
-
+export UUID_EFI=$(blkid -o value -s UUID "$PART1")
+export UUID_ROOT= $UUID_XFS;
     cat << FSTAB > /mnt/etc/fstab
 UUID=$UUID_XFS / xfs defaults,noatime 0 1
 UUID=$UUID_EFI /boot/efi vfat defaults 0 2
